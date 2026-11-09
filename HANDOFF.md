@@ -1,11 +1,11 @@
-# 引き継ぎメモ（2026-11-11 朝の時点）
+# 引き継ぎメモ（2026-11-11 時点）
 
 ## いまの状態
-- **案 A（claude.ai/code の読み上げ）を実装した。** ブランチ `feature/claude-code`、**未コミット**。
+- **案 A（claude.ai/code の読み上げ）を 1.1.0 として公開した**（main に push 済み）。Tampermonkey が自動で取り込む。
   - 新しいファイル: `src/sites/claude-code.ts`、`src/sites/switch-adapter.ts`、`tests/claude-code.test.ts`
   - 変えたファイル: `src/observer.ts`（休みのあとも続きを読む）、`src/sites/claude.ts`（/code で切り替え）、
     `src/sites/types.ts`、`src/logger.ts`、`README.md`（構成に2行）
-  - `npm test` 213件成功、`npm run typecheck`・`npm run build` も通る。`dist/` は配る時にビルドし直すので戻してある。
+  - `npm test` 213件成功、`npm run typecheck`・`npm run build` も通る。
 - **実機で確かめた**（Remote Control のセッションに新しい仕組みだけを差し込み、読み上げに回す文章を記録）:
   返答中の判定、ツールの行を読まない、休みのあとも続きから読む、二重に読まない。詳しくは docs/claude-code-dom.md。
 - 古い2つのフォルダはゴミ箱の中（まだ空にしていない）。
@@ -25,12 +25,17 @@
 - チャット（/new, /chat/…）と Code（/code…）はページを読み直さずに行き来できるので、URL を見て毎回切り替える。
 
 ## 残っている確認
-1. **デスクトップアプリから新しい質問を送ったとき**に、Chrome 側で読み始めるか。
-2. **実際の声で**読み上げるか。新しい版を Tampermonkey に入れてから確かめる。
-3. クラウドのセッションでも同じように動くか。
+1. **実際の声で**読み上げるか。Tampermonkey が 1.1.0 を取り込んでから確かめる。
+2. クラウドのセッションでも同じように動くか。
+3. 確かめ終わったら、Tampermonkey の古い2本（Claude → VOICEVOX Bridge 0.3.1 / ChatGPT → VOICEVOX Bridge 0.5.1）を削除してよい。
 
-## このあとの流れ（Natsu さんに頼まれたら）
-コミット → push → PR → マージ → `npm run release`（1.0.0 → 1.1.0）→ `dist/` ごとコミットして push → Tampermonkey に届く。
+確かめ済み: デスクトップアプリから送った質問への返答を、Chrome 側で読み始めた（2026-11-11）。
+ただしそのとき、質問の行が画面の外にあると「新しい質問」の合図は出ず、返答中の印で読み始めていた。
+「新しい質問で読み上げを止める」設定は、その場合は効かない。
+
+## コミットするときの注意
+この Mac の git の既定のメールアドレスは、公開したくない古いアドレスになっている。
+このリポジトリでは `-c user.email="210141275+mizumori-24522@users.noreply.github.com"` を付けてコミットする。
 
 ## 気づいたこと
 - Chrome に表示される途中経過の文章は、アプリ側で書かれた文と言い回しが少し違うことがある（要約されたような表示）。

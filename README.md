@@ -1,6 +1,6 @@
 # VOICEVOX Bridge for ChatGPT & Claude
 
-ChatGPT Web（chatgpt.com）と Claude Web（claude.ai の通常チャット）の回答を、**生成の途中から VOICEVOX の好きなキャラクターの声で**読み上げる、Chrome 用の UserScript（Tampermonkey）です。
+ChatGPT Web（chatgpt.com）と Claude Web（claude.ai のチャットと、Claude Code の claude.ai/code）の回答を、**生成の途中から VOICEVOX の好きなキャラクターの声で**読み上げる、Chrome 用の UserScript（Tampermonkey）です。
 
 1本のスクリプトで両方のサイトに対応します。開いているサイトを見分けて、そのサイト用の読み取り方に切り替えます。
 
@@ -35,7 +35,8 @@ ChatGPT Web（chatgpt.com）と Claude Web（claude.ai の通常チャット）�
 5. 話者を選び、「詳細設定 → テスト発声」で音が出ることを確認する
 
 - **更新**：新しい版は Tampermonkey が自動で取り込みます（既定で 1 日 1 回確認）。すぐ欲しいときは、Tampermonkey のダッシュボードの「ユーティリティ」→「インストール済みスクリプトの更新を確認」
-- **対象**：通常のチャットだけです。claude.ai/code（Claude Code の Web 版）と各デスクトップアプリ版では動きません
+- **対象**：Chrome で開いたチャット画面と、claude.ai/code（Claude Code の Web 版）です。各デスクトップアプリ版では動きません
+- **Claude Code で使うとき**：Claude Code の返答は、Claude が話しかけてくる文章だけを読み、コマンドの実行や差分の表示は読み飛ばします。デスクトップアプリでやり取りしながら、Chrome で同じセッションの claude.ai/code を開いておくと、Chrome 側が新しい返答を読み上げます（Chrome の一覧に並ぶクラウドと Remote Control のセッションが対象。ローカルのセッションは Chrome に出ないので読めません）
 - **設定**：サイトごとに別々に保存されます（ChatGPT と Claude で違う声にできます）
 
 ### 以前の2本から移るとき

@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         VOICEVOX Bridge for ChatGPT & Claude
 // @namespace    local.voicevox-bridge-for-chatgpt-claude
-// @version      1.0.0
+// @version      1.1.0
 // @author       mizumori-24522
-// @description  ChatGPT Web と Claude Web の回答を VOICEVOX で逐次読み上げする
+// @description  ChatGPT Web と Claude Web（Claude Code の claude.ai/code も）の回答を VOICEVOX で逐次読み上げする
 // @homepageURL  https://github.com/mizumori-24522/voicevox-bridge-for-chatgpt-claude
 // @supportURL   https://github.com/mizumori-24522/voicevox-bridge-for-chatgpt-claude/issues
 // @downloadURL  https://raw.githubusercontent.com/mizumori-24522/voicevox-bridge-for-chatgpt-claude/main/dist/voicevox-bridge.user.js
@@ -542,8 +542,8 @@
   const UNIT_SEL = "[data-content-search-unit-key]";
   const TURN_SEL = "[data-turn]";
   const TURN_FALLBACK_SEL = '[data-testid^="conversation-turn-"]';
-  const ASSISTANT_SEL$1 = '[data-message-author-role="assistant"]';
-  const USER_SEL$1 = '[data-message-author-role="user"]';
+  const ASSISTANT_SEL$2 = '[data-message-author-role="assistant"]';
+  const USER_SEL$2 = '[data-message-author-role="user"]';
   const USER_BUBBLE_SEL = "[data-user-message-bubble]";
   const CONTENT_SELECTORS$1 = [
     '[data-markdown-text-style="assistant-message"]',
@@ -582,7 +582,7 @@
       const units = this.units("assistant");
       if (units.length > 0) return units;
       return this.legacyTurns().filter(
-        (t) => t.getAttribute("data-turn") === "assistant" || t.getAttribute("data-turn") === null && t.querySelector(ASSISTANT_SEL$1) !== null
+        (t) => t.getAttribute("data-turn") === "assistant" || t.getAttribute("data-turn") === null && t.querySelector(ASSISTANT_SEL$2) !== null
       );
     }
     /** 発言から本文要素を取り出す */
@@ -593,7 +593,7 @@
     userTurns() {
       const units = this.units("user");
       if (units.length > 0) return units;
-      return Array.from(document.querySelectorAll(USER_SEL$1));
+      return Array.from(document.querySelectorAll(USER_SEL$2));
     }
     /** 質問の発言から本文要素を取り出す（添付やボタン列、吹き出しに足された時刻などは含めない） */
     contentOfUserTurn(turn) {
@@ -639,7 +639,7 @@
       return `${location.pathname}:assistant-${index}`;
     }
     messageOf(turn, role) {
-      const sel = role === "assistant" ? ASSISTANT_SEL$1 : USER_SEL$1;
+      const sel = role === "assistant" ? ASSISTANT_SEL$2 : USER_SEL$2;
       return turn.matches(sel) ? turn : turn.querySelector(sel) ?? turn;
     }
     // ---- 旧構造 ----
@@ -656,7 +656,7 @@
         if (attr === role) return t;
         if (attr === null && t.querySelector(`[data-message-author-role="${role}"]`)) return t;
       }
-      const sel = role === "assistant" ? ASSISTANT_SEL$1 : USER_SEL$1;
+      const sel = role === "assistant" ? ASSISTANT_SEL$2 : USER_SEL$2;
       const nodes = document.querySelectorAll(sel);
       return nodes.length > 0 ? nodes[nodes.length - 1] : null;
     }
@@ -771,6 +771,246 @@
       alignQuestion: alignQuestionButton
     }
   };
+  const ROW_SEL = '[data-testid="transcript-row"]';
+  const ASSISTANT_SEL$1 = '[data-testid="assistant-message"]';
+  const USER_SEL$1 = '[data-testid="user-message"]';
+  const USER_TURN_SEL$1 = '[data-cds="UserMessage"]';
+  const ENGINE_ROOT_SEL$1 = "[data-transcript-engine-root]";
+  const COMPOSER_SELECTORS$1 = [
+    '[data-testid="code-prompt-input"]',
+    '[data-cds="ChatComposer"] [contenteditable="true"]'
+  ];
+  const SEND_BUTTON_SEL$1 = '[data-testid="code-prompt-send"]';
+  const STOP_BUTTON_SEL = '[data-testid="code-prompt-stop"]';
+  const WORKING_SEL = '[data-testid="code-working-line"][data-turn-working="true"]';
+  function isClaudeCodePath(pathname) {
+    return pathname === "/code" || pathname.startsWith("/code/");
+  }
+  function isHumanRow(row) {
+    const kind = row.getAttribute("data-perf-row");
+    if (kind) return kind === "human";
+    return row.querySelector(USER_SEL$1) !== null;
+  }
+  function rowIndex(row) {
+    const v = row.getAttribute("data-index") ?? row.getAttribute("data-rs-index");
+    if (v === null) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  class ClaudeCodeAdapter {
+    constructor() {
+      this.resumesAfterPause = true;
+      this.cache = null;
+      this.lastAnchor = null;
+    }
+    /** 会話の URL は /code/session_<英数字>。新規作成（/code）は会話未確定なので null */
+    conversationKey(pathname) {
+      const m = pathname.match(/^\/code\/(session_[^/]+)/);
+      return m ? m[1] : null;
+    }
+    getObserverRoot() {
+      const main2 = document.querySelector("main");
+      return main2 ?? document.body;
+    }
+    /** 本文を持つ回答の行を出現順に全部返す（ツールだけの行には読むものが無い） */
+    assistantTurns() {
+      return Array.from(document.querySelectorAll(ASSISTANT_SEL$1)).filter(
+        (turn) => turn.querySelector(ENGINE_ROOT_SEL$1) !== null
+      );
+    }
+    /** 回答の行から本文の列を取り出す。列の中のツール表示などは sanitize 側で読み飛ばす */
+    contentOfTurn(turn) {
+      return this.columnOf(turn) ?? turn;
+    }
+    userTurns() {
+      return Array.from(document.querySelectorAll(USER_SEL$1)).map(
+        (body) => body.closest(USER_TURN_SEL$1) ?? body
+      );
+    }
+    contentOfUserTurn(turn) {
+      return turn.matches(USER_SEL$1) ? turn : turn.querySelector(USER_SEL$1) ?? turn;
+    }
+    /**
+     * 最後の質問より後ろの回答の行すべてを、1 つの返答として返す。
+     * content は各行の本文の列の写しを順につないだ、DOM に置かれていない要素。
+     */
+    getLatestAssistantMessage() {
+      var _a;
+      const reply = this.collectReply();
+      if (!reply || reply.rows.length === 0) return null;
+      if (((_a = this.cache) == null ? void 0 : _a.key) !== reply.key) this.cache = { key: reply.key, parts: /* @__PURE__ */ new Map() };
+      const parts = this.cache.parts;
+      reply.rows.forEach((row, i) => {
+        const turn = row.querySelector(ASSISTANT_SEL$1);
+        const column = turn ? this.columnOf(turn) : null;
+        if (!column) return;
+        parts.set(rowIndex(row) ?? i, column.cloneNode(true));
+      });
+      const content = document.createElement("div");
+      for (const k of Array.from(parts.keys()).sort((a, b) => a - b)) {
+        content.appendChild(parts.get(k).cloneNode(true));
+      }
+      const last = reply.rows[reply.rows.length - 1];
+      return {
+        id: reply.key,
+        element: last.querySelector(ASSISTANT_SEL$1) ?? last,
+        content
+      };
+    }
+    /** 質問の同一性は本文で表す（claude.ts と同じ理由） */
+    getLatestUserMessageId() {
+      const users = document.querySelectorAll(USER_SEL$1);
+      if (users.length === 0) return null;
+      const text = (users[users.length - 1].textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
+      return text ? `user:${text}` : null;
+    }
+    /** ツールを動かしている間も「返答中」として扱われる */
+    isGenerating() {
+      return document.querySelector(WORKING_SEL) !== null || document.querySelector(STOP_BUTTON_SEL) !== null;
+    }
+    getComposer() {
+      for (const sel of COMPOSER_SELECTORS$1) {
+        const hit = document.querySelector(sel);
+        if (hit) return hit;
+      }
+      return null;
+    }
+    /**
+     * Chrome の入力欄から送ったときの検出。
+     * デスクトップアプリから送った質問は、ここではなく observer の
+     * 「質問の行が増えた」「生成中になった」で拾う。
+     */
+    onSubmit(cb) {
+      const inComposer = (t) => {
+        if (!(t instanceof Element)) return false;
+        const composer = this.getComposer();
+        return composer !== null && (composer === t || composer.contains(t));
+      };
+      const hasText = () => {
+        var _a;
+        return (((_a = this.getComposer()) == null ? void 0 : _a.textContent) ?? "").trim().length > 0;
+      };
+      document.addEventListener(
+        "keydown",
+        (e) => {
+          if (!isClaudeCodePath(location.pathname)) return;
+          if (e.key !== "Enter" || e.shiftKey || e.isComposing || e.keyCode === 229) return;
+          if (!inComposer(e.target) || !hasText()) return;
+          cb();
+        },
+        true
+      );
+      document.addEventListener(
+        "click",
+        (e) => {
+          if (!isClaudeCodePath(location.pathname)) return;
+          const t = e.target;
+          if (t instanceof Element && t.closest(SEND_BUTTON_SEL$1)) cb();
+        },
+        true
+      );
+    }
+    probe() {
+      const rows = document.querySelectorAll(ROW_SEL).length;
+      const composer = this.getComposer() !== null;
+      const ok = composer || rows > 0;
+      const detail = `rows=${rows} composer=${composer}`;
+      if (ok) log("ClaudeCode", "probe ok", detail);
+      else warn("ClaudeCode", "DOM を認識できません", detail);
+      return { ok, detail };
+    }
+    columnOf(turn) {
+      var _a;
+      const column = (_a = turn.querySelector(ENGINE_ROOT_SEL$1)) == null ? void 0 : _a.parentElement;
+      return column && column !== turn ? column : null;
+    }
+    /**
+     * 最後の質問の行より後ろにある回答の行を集める。
+     * key は「どの会話の、どの質問への返答か」。質問の行が見えなくなっても、
+     * 直前に見えていた質問の番号を使い続ける。
+     */
+    collectReply() {
+      var _a;
+      const rows = Array.from(document.querySelectorAll(ROW_SEL));
+      if (rows.length === 0) return null;
+      const path = location.pathname;
+      let lastHuman = -1;
+      for (let i = rows.length - 1; i >= 0; i--) {
+        if (isHumanRow(rows[i])) {
+          lastHuman = i;
+          break;
+        }
+      }
+      let anchor;
+      if (lastHuman >= 0) {
+        const human = rows[lastHuman];
+        const idx = rowIndex(human);
+        anchor = idx !== null ? `row${idx}` : `q:${(human.textContent ?? "").trim().slice(0, 80)}`;
+        this.lastAnchor = { path, anchor };
+      } else {
+        anchor = ((_a = this.lastAnchor) == null ? void 0 : _a.path) === path ? this.lastAnchor.anchor : "top";
+      }
+      const replyRows = rows.slice(lastHuman + 1).filter((r) => !isHumanRow(r) && r.querySelector(ASSISTANT_SEL$1));
+      return { key: `code:${path}:${anchor}`, rows: replyRows };
+    }
+  }
+  function isClaudeCodeChrome(el) {
+    const cds = el.getAttribute("data-cds");
+    if (cds === "TurnStatus" || cds === "MessageActions" || cds === "Banner" || cds === "DiffIndicator") return true;
+    if (el.hasAttribute("data-tool-anchor")) return true;
+    return el.tagName === "SPAN" && el.hasAttribute("data-not-prose");
+  }
+  class SwitchAdapter {
+    constructor(normal, alt, useAlt) {
+      this.normal = normal;
+      this.alt = alt;
+      this.useAlt = useAlt;
+    }
+    get current() {
+      return this.useAlt(location.pathname) ? this.alt : this.normal;
+    }
+    get resumesAfterPause() {
+      return this.current.resumesAfterPause === true;
+    }
+    getObserverRoot() {
+      return this.current.getObserverRoot();
+    }
+    assistantTurns() {
+      return this.current.assistantTurns();
+    }
+    contentOfTurn(turn) {
+      return this.current.contentOfTurn(turn);
+    }
+    userTurns() {
+      return this.current.userTurns();
+    }
+    contentOfUserTurn(turn) {
+      return this.current.contentOfUserTurn(turn);
+    }
+    getLatestAssistantMessage() {
+      return this.current.getLatestAssistantMessage();
+    }
+    getLatestUserMessageId() {
+      return this.current.getLatestUserMessageId();
+    }
+    isGenerating() {
+      return this.current.isGenerating();
+    }
+    getComposer() {
+      return this.current.getComposer();
+    }
+    /** どちらの画面の送信も拾えるよう、両方に付けておく（各部品が自分の入力欄だけを見る） */
+    onSubmit(cb) {
+      this.normal.onSubmit(cb);
+      this.alt.onSubmit(cb);
+    }
+    conversationKey(pathname) {
+      return (this.useAlt(pathname) ? this.alt : this.normal).conversationKey(pathname);
+    }
+    probe() {
+      return this.current.probe();
+    }
+  }
   const ASSISTANT_SEL = '[data-testid="assistant-message"]';
   const USER_SEL = '[data-testid="user-message"]';
   const USER_TURN_SEL = '[data-cds="UserMessage"]';
@@ -881,6 +1121,7 @@
       document.addEventListener(
         "keydown",
         (e) => {
+          if (isClaudeCodePath(location.pathname)) return;
           if (e.key !== "Enter" || e.shiftKey || e.isComposing || e.keyCode === 229) return;
           if (!inComposer(e.target) || !hasText()) return;
           cb();
@@ -890,6 +1131,7 @@
       document.addEventListener(
         "click",
         (e) => {
+          if (isClaudeCodePath(location.pathname)) return;
           const t = e.target;
           if (!(t instanceof Element)) return;
           if (t.closest(SEND_BUTTON_SEL)) cb();
@@ -915,9 +1157,10 @@
   const claudeSite = {
     id: "claude",
     label: "Claude",
-    createAdapter: () => new ClaudeAdapter(),
+    // チャットと Claude Code（/code）は同じ claude.ai の中で行き来できるので、URL を見て切り替える
+    createAdapter: () => new SwitchAdapter(new ClaudeAdapter(), new ClaudeCodeAdapter(), isClaudeCodePath),
     sanitize: {
-      skip: isClaudeChrome,
+      skip: (el) => isClaudeCodePath(location.pathname) ? isClaudeCodeChrome(el) : isClaudeChrome(el),
       // Claude のコード枠。言語名のラベル（python など）を読まないよう、中の pre だけを扱う
       isCodeFrame: (el) => el.tagName !== "PRE" && el.getAttribute("role") === "group" && el.querySelector("pre") !== null
     },
@@ -1213,6 +1456,7 @@ ${el.textContent ?? ""}
       this.armed = false;
       this.live = false;
       this.finished = false;
+      this.spokeThisMessage = false;
       this.conversationPath = location.pathname;
       this.openPending = null;
       this.openedAt = 0;
@@ -1313,11 +1557,20 @@ ${el.textContent ?? ""}
       const text = this.extract(latest.content);
       if (text === "" && this.tracker.consumedLength > 0) return;
       const delta = this.tracker.push(text);
+      const resumable = adapter.resumesAfterPause === true;
       if (!this.live) {
-        if (!delta || this.finished) return;
+        if (!delta) return;
+        if (resumable) {
+          if (!this.spokeThisMessage && !generating) return;
+          this.finished = false;
+          log("Observer", this.spokeThisMessage ? "休みのあと返答の続きが出たので読む" : "生成中の返答が伸びたので読み始める", latest.id);
+        } else {
+          if (this.finished) return;
+          log("Observer", "取り込み済みの回答が伸びたので読み始める", latest.id);
+        }
         this.live = true;
-        log("Observer", "取り込み済みの回答が伸びたので読み始める", latest.id);
       }
+      this.spokeThisMessage = true;
       this.chunker.setOptions(this.deps.getChunkerOptions());
       if (delta) {
         this.chunker.append(delta);
@@ -1325,7 +1578,7 @@ ${el.textContent ?? ""}
       }
       const settled = Date.now() - this.lastDeltaAt >= SETTLE_MS;
       const done = !generating && settled;
-      const chunks = this.chunker.take(done);
+      const chunks = this.chunker.take(done || resumable && settled);
       for (const c of chunks) {
         log("Chunker", "chunk", c);
         this.deps.onChunk(c);
@@ -1377,6 +1630,7 @@ ${el.textContent ?? ""}
     /** 別の回答に切り替わった。解禁されていれば読み始め、そうでなければ黙って取り込む。 */
     beginMessage(latest) {
       this.finished = false;
+      this.spokeThisMessage = false;
       this.tracker.reset();
       this.chunker.clear();
       this.lastDeltaAt = Date.now();

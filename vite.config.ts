@@ -15,7 +15,7 @@ export default defineConfig({
         name: 'VOICEVOX Bridge for ChatGPT & Claude',
         namespace: 'local.voicevox-bridge-for-chatgpt-claude',
         version: pkg.version,
-        description: 'ChatGPT Web と Claude Web の回答を VOICEVOX で逐次読み上げする',
+        description: 'ChatGPT Web と Claude Web（Claude Code の claude.ai/code も）の回答を VOICEVOX で逐次読み上げする',
         author: 'mizumori-24522',
         homepageURL: `https://github.com/${REPO}`,
         supportURL: `https://github.com/${REPO}/issues`,
