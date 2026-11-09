@@ -1,0 +1,255 @@
+import type { CodeMode, UrlMode } from './settings';
+import type { SiteSanitizeRules } from './sites/types';
+
+export type SanitizeOptions = {
+  urlMode: UrlMode;
+  codeMode: CodeMode;
+  tableMode: 'skip' | 'announce' | 'read';
+  /** インラインコードをそのまま読む上限文字数 */
+  inlineCodeMaxLength: number;
+  /**
+   * ファイル名・パス・識別子の中の記号を読み上げるか。
+   * 例: VOICEVOX_PLAN.md → ボイスボックス アンダーバー …
+   */
+  readSymbols: boolean;
+  /** サイト固有の読み飛ばし（進行表示・ボタン列など）。省略時は無し */
+  site?: SiteSanitizeRules;
+};
+
+export const DEFAULT_SANITIZE_OPTIONS: SanitizeOptions = {
+  urlMode: 'announce',
+  codeMode: 'announce-once',
+  tableMode: 'announce',
+  inlineCodeMaxLength: 24,
+  readSymbols: false,
+};
+
+/** 識別子の中で読み上げ対象にする記号 */
+const SYMBOL_WORDS: Record<string, string> = {
+  _: ' アンダーバー ',
+  '-': ' ハイフン ',
+  '.': ' ドット ',
+  '/': ' スラッシュ ',
+  ':': ' コロン ',
+  '+': ' プラス ',
+  '#': ' シャープ ',
+  '@': ' アット ',
+  '~': ' チルダ ',
+  '*': ' アスタリスク ',
+};
+
+/**
+ * `VOICEVOX_PLAN.md` や `src/main.ts` のような識別子の中の記号を
+ * 読み仮名へ置き換える。
+ *
+ * 英数字に挟まれた記号だけが対象。普通の文中のハイフンや、
+ * 日付の 2026/09/18 のような数字だけの並びは巻き込まない。
+ */
+export function expandSymbols(text: string): string {
+  const TOKEN = /[A-Za-z0-9]+(?:[_\-./:+#@~*][A-Za-z0-9]+)+/g;
+  return text.replace(TOKEN, (token) => {
+    if (!/[A-Za-z]/.test(token)) return token;
+    return token.replace(/[_\-./:+#@~*]/g, (sym) => SYMBOL_WORDS[sym] ?? sym);
+  });
+}
+
+const URL_RE = /https?:\/\/[^\s<>"'）)」』】]+/g;
+const BLOCK_TAGS = new Set([
+  'P', 'DIV', 'LI', 'BR', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+  'BLOCKQUOTE', 'UL', 'OL', 'TR', 'HR', 'SECTION', 'ARTICLE',
+]);
+
+/**
+ * assistant メッセージの DOM から読み上げ用テキストを抽出する。
+ *
+ * Markdown のテキストを後からパースするのではなく、サイトが既に
+ * レンダリングした DOM の構造（pre / table / a など）を根拠に判定するため、
+ * 生成途中の未閉じコードフェンスなどにも強い。
+ */
+export function extractSpeechText(root: Element, opts: SanitizeOptions): string {
+  const parts: string[] = [];
+  walk(root, opts, parts, { blocks: 0 });
+  return normalizeWhitespace(parts.join(''));
+}
+
+/** 1つのメッセージ内で何個目のブロックかを数えるための状態 */
+type WalkState = { blocks: number };
+
+function walk(node: Node, opts: SanitizeOptions, out: string[], state: WalkState): void {
+  if (node.nodeType === Node.TEXT_NODE) {
+    const t = replaceUrls(node.nodeValue ?? '', opts.urlMode);
+    out.push(opts.readSymbols ? expandSymbols(t) : t);
+    return;
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+  const el = node as Element;
+  const tag = el.tagName;
+
+  if (isHidden(el) || isCitation(el) || opts.site?.skip(el)) return;
+
+  // コード枠。言語名のラベル（python など）を読まないよう、中の pre だけを扱う。
+  if (opts.site?.isCodeFrame(el)) {
+    for (const pre of Array.from(el.querySelectorAll('pre'))) walk(pre, opts, out, state);
+    return;
+  }
+
+  if (tag === 'PRE') {
+    if (opts.codeMode === 'read') {
+      out.push(`\n${el.textContent ?? ''}\n`);
+      return;
+    }
+    state.blocks++;
+    // 「最初だけ知らせる」= 2個目以降は黙る。
+    // 図やコードが何度も出てくる回答で、同じ台詞を繰り返さないため。
+    if (opts.codeMode === 'skip') return;
+    if (opts.codeMode === 'announce-once' && state.blocks > 1) return;
+    out.push(isDiagram(el.textContent ?? '') ? '\nここに図があります。\n' : '\nここにコードがあります。\n');
+    return;
+  }
+
+  if (tag === 'TABLE') {
+    if (opts.tableMode === 'skip') return;
+    if (opts.tableMode === 'announce') {
+      out.push('\n表があります。\n');
+      return;
+    }
+  }
+
+  if (tag === 'CODE' && el.closest('pre') === null) {
+    const t = (el.textContent ?? '').trim();
+    if (t.length > opts.inlineCodeMaxLength) {
+      out.push('コード');
+      return;
+    }
+    out.push(opts.readSymbols ? expandSymbols(t) : t);
+    return;
+  }
+
+  if (tag === 'A') {
+    const text = (el.textContent ?? '').trim();
+    const href = el.getAttribute('href') ?? '';
+    const textIsUrl = /^https?:\/\//.test(text);
+    if (textIsUrl || text.length === 0) {
+      out.push(linkPlaceholder(opts.urlMode, href));
+    } else {
+      const t = replaceUrls(text, opts.urlMode);
+      out.push(opts.readSymbols ? expandSymbols(t) : t);
+    }
+    return;
+  }
+
+  if (tag === 'IMG' || tag === 'SVG' || tag === 'BUTTON' || tag === 'SCRIPT' || tag === 'STYLE') return;
+
+  const isBlock = BLOCK_TAGS.has(tag);
+  if (isBlock) out.push('\n');
+  for (const child of Array.from(el.childNodes)) walk(child, opts, out, state);
+  if (isBlock) out.push('\n');
+}
+
+/**
+ * コードブロックの中身が、プログラムではなく罫線で描いた図かどうか。
+ * 記号と空白が大半を占め、単語がほとんど無いものを図とみなす。
+ */
+export function isDiagram(text: string): boolean {
+  const body = text.replace(/\s/g, '');
+  if (body.length === 0) return false;
+  const boxChars = (body.match(/[|｜│─━┃┌┐└┘├┤┬┴┼＋+\-=_*▲▼◀▶←→↑↓]/g) ?? []).length;
+  return boxChars / body.length >= 0.3;
+}
+
+function isHidden(el: Element): boolean {
+  if (el.getAttribute('aria-hidden') === 'true') return true;
+  if (el.hasAttribute('hidden')) return true;
+  const cls = el.getAttribute('class') ?? '';
+  return /\bsr-only\b|\bvisually-hidden\b/.test(cls);
+}
+
+/** Web検索回答に付く引用マーカー・出典フッターを除外する。 */
+function isCitation(el: Element): boolean {
+  const tag = el.tagName;
+  if (tag === 'SUP') return true;
+  const testid = el.getAttribute('data-testid') ?? '';
+  if (/citation|sources|search-result|turn-source/i.test(testid)) return true;
+  if (el.hasAttribute('data-citation')) return true;
+  return false;
+}
+
+function linkPlaceholder(mode: UrlMode, href: string): string {
+  if (mode === 'skip') return '';
+  if (mode === 'read') return href;
+  return 'リンクがあります。';
+}
+
+function replaceUrls(text: string, mode: UrlMode): string {
+  if (mode === 'read') return text;
+  return text.replace(URL_RE, mode === 'skip' ? '' : 'リンクがあります。');
+}
+
+/**
+ * プレーンな Markdown テキストを読み上げ向けに整形する。
+ * DOM が取れない場合のフォールバックと、単体テスト用。
+ */
+export function sanitizeMarkdown(input: string, opts: SanitizeOptions): string {
+  let t = input;
+
+  // フェンス付きコードブロック（未閉じも含む）
+  let fenceCount = 0;
+  t = t.replace(/```([\s\S]*?)(?:```|$)/g, (_m, body: string) => {
+    fenceCount++;
+    if (opts.codeMode === 'skip') return '\n';
+    if (opts.codeMode === 'announce-once' && fenceCount > 1) return '\n';
+    return isDiagram(body) ? '\nここに図があります。\n' : '\nここにコードがあります。\n';
+  });
+
+  // インラインコード
+  t = t.replace(/`([^`\n]+)`/g, (_m, code: string) =>
+    code.length <= opts.inlineCodeMaxLength ? code : 'コード',
+  );
+
+  // 画像・リンク
+  t = t.replace(/!\[[^\]]*\]\([^)]*\)/g, '');
+  t = t.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
+
+  // 見出し・引用・リストマーカー
+  t = t.replace(/^\s{0,3}#{1,6}\s+/gm, '');
+  t = t.replace(/^\s{0,3}>\s?/gm, '');
+  t = t.replace(/^\s{0,3}[-*+]\s+/gm, '');
+  t = t.replace(/^\s{0,3}\d+[.)]\s+/gm, '');
+
+  // 水平線
+  t = t.replace(/^\s{0,3}(?:[-*_]\s*){3,}$/gm, '');
+
+  // 強調
+  t = t.replace(/\*\*([^*]+)\*\*/g, '$1');
+  t = t.replace(/__([^_]+)__/g, '$1');
+  t = t.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1$2');
+  t = t.replace(/~~([^~]+)~~/g, '$1');
+
+  t = replaceUrls(t, opts.urlMode);
+  if (opts.readSymbols) t = expandSymbols(t);
+
+  return normalizeWhitespace(t);
+}
+
+/**
+ * 絵文字・装飾記号。VOICEVOX へそのまま渡すと不自然な間が入るので落とす。
+ * 異体字セレクタ・ZWJ・肌色修飾・国旗も一緒に消す。
+ */
+const DECORATION_RE =
+  /[\p{Extended_Pictographic}\p{Emoji_Presentation}\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}\u{FE0E}\u{FE0F}\u{200D}\u{20E3}]/gu;
+
+export function stripDecorations(text: string): string {
+  return text.replace(DECORATION_RE, '');
+}
+
+export function normalizeWhitespace(text: string): string {
+  return stripDecorations(text)
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t ]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{2,}/g, '\n')
+    // 末尾の改行を残すと、次の観測で「本文が前方一致しない」判定になり
+    // 差分追跡（StreamTracker）が壊れるため必ず削る。
+    .replace(/^\s+|\s+$/g, '');
+}
