@@ -1,4 +1,6 @@
 import { log, warn } from '../logger';
+import { ClaudeCodeAdapter, isClaudeCodeChrome, isClaudeCodePath } from './claude-code';
+import { SwitchAdapter } from './switch-adapter';
 import type { AssistantMessage, Site, SiteAdapter } from './types';
 
 /**
@@ -152,6 +154,7 @@ export class ClaudeAdapter implements SiteAdapter {
     document.addEventListener(
       'keydown',
       (e) => {
+        if (isClaudeCodePath(location.pathname)) return;
         if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229) return;
         if (!inComposer(e.target) || !hasText()) return;
         cb();
@@ -161,6 +164,7 @@ export class ClaudeAdapter implements SiteAdapter {
     document.addEventListener(
       'click',
       (e) => {
+        if (isClaudeCodePath(location.pathname)) return;
         const t = e.target;
         if (!(t instanceof Element)) return;
         if (t.closest(SEND_BUTTON_SEL)) cb();
@@ -195,9 +199,10 @@ function isClaudeChrome(el: Element): boolean {
 export const claudeSite: Site = {
   id: 'claude',
   label: 'Claude',
-  createAdapter: () => new ClaudeAdapter(),
+  // チャットと Claude Code（/code）は同じ claude.ai の中で行き来できるので、URL を見て切り替える
+  createAdapter: () => new SwitchAdapter(new ClaudeAdapter(), new ClaudeCodeAdapter(), isClaudeCodePath),
   sanitize: {
-    skip: isClaudeChrome,
+    skip: (el) => (isClaudeCodePath(location.pathname) ? isClaudeCodeChrome(el) : isClaudeChrome(el)),
     // Claude のコード枠。言語名のラベル（python など）を読まないよう、中の pre だけを扱う
     isCodeFrame: (el) =>
       el.tagName !== 'PRE' && el.getAttribute('role') === 'group' && el.querySelector('pre') !== null,

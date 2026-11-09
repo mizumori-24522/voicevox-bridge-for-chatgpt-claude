@@ -133,6 +133,8 @@ src/
     types.ts              サイト部品の約束事（SiteAdapter など）
     index.ts              detectSite(): claude.ai → Claude、chatgpt.com → ChatGPT
     claude.ts             Claude の DOM の読み方、読み飛ばす部品、ボタンの置き場所
+    claude-code.ts        Claude Code（claude.ai/code）の DOM の読み方。1回の返答が何行にも分かれるのをまとめる
+    switch-adapter.ts     claude.ai の中で、チャットと /code を URL で切り替える
     chatgpt.ts            ChatGPT の DOM の読み方、ボタンの置き場所
   observer.ts ほか        共通部分
 tests/

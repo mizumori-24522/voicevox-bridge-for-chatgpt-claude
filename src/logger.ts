@@ -1,4 +1,4 @@
-export type LogTag = 'Observer' | 'Claude' | 'ChatGPT' | 'Chunker' | 'VOICEVOX' | 'Playback' | 'UI' | 'Main';
+export type LogTag = 'Observer' | 'Claude' | 'ClaudeCode' | 'ChatGPT' | 'Chunker' | 'VOICEVOX' | 'Playback' | 'UI' | 'Main';
 
 let debugEnabled = false;
 

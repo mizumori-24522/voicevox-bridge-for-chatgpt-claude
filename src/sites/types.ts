@@ -11,6 +11,11 @@ export type AssistantMessage = {
 
 /** 画面の DOM を読むための部品。サイトの DOM 依存はすべてここへ隔離する */
 export interface SiteAdapter {
+  /**
+   * ツール実行などで本文が長く止まったあと、同じ返答の続きが伸びることがあるサイトなら true。
+   * true のときは、止まった時点で切りのよいところまで読み、続きが出たら読み直さずに続きから読む。
+   */
+  readonly resumesAfterPause?: boolean;
   getObserverRoot(): HTMLElement;
   /** assistant の発言を出現順に全部返す */
   assistantTurns(): HTMLElement[];

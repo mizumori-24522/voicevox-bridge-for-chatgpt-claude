@@ -76,6 +76,12 @@ export class ChatObserver {
   private live = false;
   /** 今の回答を最後まで読み切ったか */
   private finished = false;
+  /**
+   * 今の回答を一度でも読み上げたか。
+   * 休みのあとに続きが伸びたとき、読んでいた返答の続きなのか、
+   * 開いた直後の描画で伸びただけなのかを見分けるのに使う。
+   */
+  private spokeThisMessage = false;
   /** lastUserMessageId をどの会話で記録したか。会話が変わったら基準を捨てる。 */
   private conversationPath = location.pathname;
   /**
@@ -213,13 +219,25 @@ export class ChatObserver {
     if (text === '' && this.tracker.consumedLength > 0) return;
 
     const delta = this.tracker.push(text);
+    const resumable = adapter.resumesAfterPause === true;
     if (!this.live) {
-      // 黙って取り込んだ回答が、その後も伸び続けている = 実は生成中だった
-      // （送信も生成中も検出できなかった場合の保険）。読み切った回答は対象外。
-      if (!delta || this.finished) return;
+      if (!delta) return;
+      if (resumable) {
+        // Claude Code など: ツールを動かす間に本文が止まり、そのあと同じ返答の続きが出る。
+        // 読んでいた返答の続きなら、生成中の印が一瞬消えていても続きから読む。
+        // 一度も読んでいない返答は、生成中のときだけ（開いた直後の描画で伸びたのを読まないため）。
+        if (!this.spokeThisMessage && !generating) return;
+        this.finished = false;
+        log('Observer', this.spokeThisMessage ? '休みのあと返答の続きが出たので読む' : '生成中の返答が伸びたので読み始める', latest.id);
+      } else {
+        // 黙って取り込んだ回答が、その後も伸び続けている = 実は生成中だった
+        // （送信も生成中も検出できなかった場合の保険）。読み切った回答は対象外。
+        if (this.finished) return;
+        log('Observer', '取り込み済みの回答が伸びたので読み始める', latest.id);
+      }
       this.live = true;
-      log('Observer', '取り込み済みの回答が伸びたので読み始める', latest.id);
     }
+    this.spokeThisMessage = true;
 
     this.chunker.setOptions(this.deps.getChunkerOptions());
     if (delta) {
@@ -229,7 +247,9 @@ export class ChatObserver {
 
     const settled = Date.now() - this.lastDeltaAt >= SETTLE_MS;
     const done = !generating && settled;
-    const chunks = this.chunker.take(done);
+    // 休みのあるサイトでは、本文が止まったら切りのよくない残りも読んでおく。
+    // ツールを動かしている間（数分のこともある）「〜を確認します：」で待たされないため。
+    const chunks = this.chunker.take(done || (resumable && settled));
     for (const c of chunks) {
       log('Chunker', 'chunk', c);
       this.deps.onChunk(c);
@@ -287,6 +307,7 @@ export class ChatObserver {
   /** 別の回答に切り替わった。解禁されていれば読み始め、そうでなければ黙って取り込む。 */
   private beginMessage(latest: { id: string; content: Element }): void {
     this.finished = false;
+    this.spokeThisMessage = false;
     this.tracker.reset();
     this.chunker.clear();
     this.lastDeltaAt = Date.now();
