@@ -1,5 +1,5 @@
 import { log, warn } from '../logger';
-import { ClaudeCodeAdapter, isClaudeCodeChrome, isClaudeCodePath } from './claude-code';
+import { ClaudeCodeAdapter, isClaudeCodeChrome, isClaudeCodePath, rowsContiguous } from './claude-code';
 import { SwitchAdapter } from './switch-adapter';
 import type { AssistantMessage, Site, SiteAdapter } from './types';
 
@@ -171,6 +171,11 @@ export class ClaudeAdapter implements SiteAdapter {
       },
       true,
     );
+  }
+
+  /** チャットの行も Claude Code と同じ仕組み（transcript-row と通し番号）で並んでいる */
+  isContiguous(a: HTMLElement, b: HTMLElement): boolean {
+    return rowsContiguous(a, b);
   }
 
   probe(): { ok: boolean; detail: string } {

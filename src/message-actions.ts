@@ -14,7 +14,8 @@
 
 import type { ReadButtonLayout } from './sites/types';
 
-export type ReadButtonKind = 'answer' | 'question';
+/** continue は「この回答から最後まで続けて読む」。回答のボタンのすぐ右に置く */
+export type ReadButtonKind = 'answer' | 'question' | 'continue';
 
 const BTN_ATTR = 'data-cvb-read-btn';
 const MARK_ATTR = 'data-cvb-actions';
@@ -23,7 +24,13 @@ const STYLE_ID = 'cvb-actions-style';
 const LABELS: Record<ReadButtonKind, string> = {
   answer: '🔊 この回答を読む',
   question: '🔊 この質問を読む',
+  continue: '▶ ここから続けて読む',
 };
+const TITLES: Partial<Record<ReadButtonKind, string>> = {
+  continue: 'この回答から会話の最後まで、順番に読み上げます',
+};
+/** 「続けて読む」ボタンと回答のボタンの間隔（px） */
+const CONTINUE_GAP = 6;
 
 /** 見た目の共通部分。位置はサイトごとの layout.css が足す */
 const BASE_CSS = `
@@ -40,7 +47,26 @@ const BASE_CSS = `
 [${MARK_ATTR}]:hover > [${BTN_ATTR}],
 [${BTN_ATTR}]:focus-visible { opacity: 1; }
 [${BTN_ATTR}]:hover { background: rgba(34,197,94,.25); border-color: rgba(34,197,94,.7); }
+/* 回答のボタンの位置が測れないときの置き場所。測れたら alignContinue が上書きする */
+[${BTN_ATTR}="continue"] { top: -24px; left: 124px; }
 `;
+
+/**
+ * 「続けて読む」ボタンを、回答のボタンのすぐ右へ並べる。
+ * 回答のボタンの置き場所はサイトごとに違うので、決め打ちせず実際の位置を測る。
+ */
+function alignContinue(turn: HTMLElement, btn: HTMLElement): void {
+  const answer = turn.querySelector<HTMLElement>(`:scope > [${BTN_ATTR}="answer"]`);
+  if (!answer) return;
+  const a = answer.getBoundingClientRect();
+  if (a.width === 0) return;
+  const t = turn.getBoundingClientRect();
+  btn.style.left = `${Math.round(a.right - t.left - turn.clientLeft + CONTINUE_GAP)}px`;
+  btn.style.top = `${Math.round(a.top - t.top - turn.clientTop)}px`;
+  btn.style.right = 'auto';
+  btn.style.bottom = 'auto';
+  btn.style.transform = 'none';
+}
 
 function ensureStyle(layout: ReadButtonLayout): void {
   if (document.getElementById(STYLE_ID)) return;
@@ -61,10 +87,11 @@ export function syncReadButtons(
   layout: ReadButtonLayout,
 ): void {
   ensureStyle(layout);
-  const align = kind === 'question' ? layout.alignQuestion : undefined;
+  const align =
+    kind === 'question' ? layout.alignQuestion : kind === 'continue' ? alignContinue : undefined;
   for (const turn of turns) {
     // 印だけ残ってボタンが消えていることがある（サイト側の再描画）。ボタンの有無で判断する。
-    const existing = turn.querySelector<HTMLElement>(`:scope > [${BTN_ATTR}]`);
+    const existing = turn.querySelector<HTMLElement>(`:scope > [${BTN_ATTR}="${kind}"]`);
     if (existing) {
       align?.(turn, existing);
       continue;
@@ -77,6 +104,7 @@ export function syncReadButtons(
     btn.setAttribute(BTN_ATTR, kind);
     btn.type = 'button';
     btn.textContent = LABELS[kind];
+    if (TITLES[kind]) btn.title = TITLES[kind]!;
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();

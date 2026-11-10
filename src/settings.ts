@@ -29,6 +29,12 @@ export type Settings = {
   /** チャットを開いたら、そのチャットの最新の回答を読む */
   readOnOpen: boolean;
   stopOnNewQuestion: boolean;
+  /** 「ここから続けて読む」のとき、間の質問も（質問用の声で）読む */
+  continuousReadsQuestions: boolean;
+  /** 返答中に文章がしばらく出てこないとき、「考え中です」と声で知らせる */
+  thinkingNotice: boolean;
+  /** 「考え中です」を言い始めるまでの秒数 */
+  thinkingNoticeSeconds: number;
   engineOrigin: string;
   debug: boolean;
   minimumChunkLength: number;
@@ -57,6 +63,9 @@ export const DEFAULT_SETTINGS: Settings = {
   readSymbols: false,
   readOnOpen: true,
   stopOnNewQuestion: true,
+  continuousReadsQuestions: false,
+  thinkingNotice: true,
+  thinkingNoticeSeconds: 10,
   engineOrigin: 'http://127.0.0.1:50021',
   debug: false,
   minimumChunkLength: 35,

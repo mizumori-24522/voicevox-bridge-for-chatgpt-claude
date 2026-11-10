@@ -78,6 +78,28 @@ function rowIndex(row: HTMLElement): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * a の行から b の行までの間に、DOM に無い行（仮想化でまだ描画されていない行）が無いか。
+ * 行には通し番号（data-index）が付いているので、番号が 1 つずつ続いているかで判断する。
+ * この画面は、会話の上のほうを見ているときも最後の数行を DOM に残すので、
+ * DOM の上で隣り合っていても、実際には何十行も離れていることがある。
+ */
+export function rowsContiguous(a: HTMLElement, b: HTMLElement): boolean {
+  const rowA = a.closest<HTMLElement>(ROW_SEL);
+  const rowB = b.closest<HTMLElement>(ROW_SEL);
+  if (!rowA || !rowB) return true;
+  const from = rowIndex(rowA);
+  const to = rowIndex(rowB);
+  if (from === null || to === null || to <= from) return true;
+  const present = new Set<number>();
+  for (const row of Array.from(document.querySelectorAll<HTMLElement>(ROW_SEL))) {
+    const i = rowIndex(row);
+    if (i !== null) present.add(i);
+  }
+  for (let i = from + 1; i < to; i++) if (!present.has(i)) return false;
+  return true;
+}
+
 export class ClaudeCodeAdapter implements SiteAdapter {
   /** ツールを動かしている間は本文が長く止まり、そのあと同じ返答の続きが伸びる */
   readonly resumesAfterPause = true;
@@ -207,6 +229,10 @@ export class ClaudeCodeAdapter implements SiteAdapter {
       },
       true,
     );
+  }
+
+  isContiguous(a: HTMLElement, b: HTMLElement): boolean {
+    return rowsContiguous(a, b);
   }
 
   probe(): { ok: boolean; detail: string } {

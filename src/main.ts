@@ -9,6 +9,7 @@ import { UiPanel } from './ui';
 import { DEFAULT_SANITIZE_OPTIONS, extractSpeechText, type SanitizeOptions } from './speech-sanitizer';
 import { SpeechChunker, type ChunkerOptions } from './chunker';
 import { syncReadButtons, removeReadButtons, getSelectionFragment } from './message-actions';
+import { ContinuousReader, mergeTurns, type ContinuousTurn } from './continuous-reader';
 import { gmAvailable } from './http';
 import { IconCache } from './icon-cache';
 
@@ -34,6 +35,8 @@ function main(site: Site): void {
       pauseLengthScale: settings.pauseLengthScale,
     }),
     onError: (msg) => {
+      // 合成に失敗したまま次の発言へ進み続けないよう、続けて読むのもやめる
+      continuous.cancel();
       ui.setStatus(msg, true);
       if (msg.includes('接続')) void connect();
     },
@@ -42,6 +45,7 @@ function main(site: Site): void {
       if (s.paused) ui.setStatus(`一時停止中（待ち ${s.queued}）`);
       else if (!s.speaking && s.queued === 0) ui.setStatus('');
       else ui.setStatus(`${s.speaking ? '読み上げ中' : '合成中'}（待ち ${s.queued}）`);
+      if (s.idle) continuous.onIdle();
     },
   });
 
@@ -82,15 +86,44 @@ function main(site: Site): void {
    */
   function speakElement(el: Element, styleId?: number): void {
     stopSpeaking();
+    if (!enqueueElement(el, styleId)) ui.setStatus('読み上げる内容がありません', true);
+  }
+
+  /** 今の読み上げを止めずに、要素の内容を列の後ろへ足す。読むものが無ければ false */
+  function enqueueElement(el: Element, styleId?: number): boolean {
     const text = extractSpeechText(el, sanitizeOptions());
-    if (!text) {
-      ui.setStatus('読み上げる内容がありません', true);
-      return;
-    }
+    if (!text) return false;
     const chunker = new SpeechChunker(chunkerOptions());
     chunker.append(text);
-    for (const c of chunker.take(true)) queue.enqueue(c, styleId);
+    const chunks = chunker.take(true);
+    for (const c of chunks) queue.enqueue(c, styleId);
+    return chunks.length > 0;
   }
+
+  const contentOf = (t: ContinuousTurn): Element =>
+    t.kind === 'answer' ? adapter.contentOfTurn(t.el) : adapter.contentOfUserTurn(t.el);
+
+  /** 「ここから続けて読む」。押した回答から会話の最後まで順に読む */
+  const continuous = new ContinuousReader({
+    listTurns: () =>
+      mergeTurns(adapter.assistantTurns(), settings.continuousReadsQuestions ? adapter.userTurns() : []),
+    textOf: (t) => extractSpeechText(contentOf(t), sanitizeOptions()),
+    speak: (t) => enqueueElement(contentOf(t), t.kind === 'question' ? questionStyleId() : undefined),
+    isIdle: () => queue.snapshot.idle,
+    reveal: (el, block) => el.scrollIntoView({ behavior: 'smooth', block }),
+    isContiguous: (a, b) => adapter.isContiguous?.(a, b) ?? true,
+    nudge: (el) => {
+      // 発言を入れているスクロール枠を探して、半画面ぶん先へ送る
+      let p = el.parentElement;
+      while (p && !(p.scrollHeight > p.clientHeight + 10 && /auto|scroll/.test(getComputedStyle(p).overflowY))) {
+        p = p.parentElement;
+      }
+      p?.scrollBy({ top: p.clientHeight * 0.6 });
+    },
+    onFinish: (reason) => {
+      if (reason === 'lost') ui.setStatus('続きの発言を見つけられませんでした', true);
+    },
+  });
 
   /** 自分の質問を読む声。選んでいない、または今のエンジンに無い話者なら回答と同じ声 */
   function questionStyleId(): number | undefined {
@@ -123,9 +156,16 @@ function main(site: Site): void {
     onNewUserMessage: () => {
       if (settings.stopOnNewQuestion) stopSpeaking();
     },
+    thinking: {
+      getWaitSeconds: () => (settings.thinkingNotice ? settings.thinkingNoticeSeconds : null),
+      // 続けて読んでいる最中は、発言と発言の間の一瞬の空きに割り込まない
+      isSpeechIdle: () => queue.snapshot.idle && !continuous.active,
+      onNotice: (count) => queue.enqueue(count === 1 ? '考え中です。' : 'まだ考えています。'),
+    },
   });
 
   function stopSpeaking(): void {
+    continuous.cancel();
     queue.stopAll();
     observer.resetBuffers();
     ui.setStatus('');
@@ -187,6 +227,15 @@ function main(site: Site): void {
         adapter.assistantTurns(),
         'answer',
         (turn) => speakElement(adapter.contentOfTurn(turn)),
+        site.readButtons,
+      );
+      syncReadButtons(
+        adapter.assistantTurns(),
+        'continue',
+        (turn) => {
+          stopSpeaking();
+          continuous.start({ el: turn, kind: 'answer' });
+        },
         site.readButtons,
       );
       syncReadButtons(

@@ -60,4 +60,7 @@ export class SwitchAdapter implements SiteAdapter {
   probe(): { ok: boolean; detail: string } {
     return this.current.probe();
   }
+  isContiguous(a: HTMLElement, b: HTMLElement): boolean {
+    return this.current.isContiguous?.(a, b) ?? true;
+  }
 }

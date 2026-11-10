@@ -34,6 +34,12 @@ export interface SiteAdapter {
   /** URL から会話 ID を取り出す。新規チャットなど会話未確定なら null */
   conversationKey(pathname: string): string | null;
   probe(): { ok: boolean; detail: string };
+  /**
+   * 発言 a と、その後ろの発言 b の間に、まだ描画されていない発言が無ければ true。
+   * 仮想化で途中の発言が DOM に無いとき、「続けて読む」が途中を飛ばさないために使う。
+   * 分からないサイトでは実装しない（間は抜けていないものとして進む）。
+   */
+  isContiguous?(a: HTMLElement, b: HTMLElement): boolean;
 }
 
 /** 本文から読み上げテキストを取り出すときの、サイト固有の決まり */

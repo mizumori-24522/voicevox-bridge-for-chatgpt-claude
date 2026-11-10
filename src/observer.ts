@@ -16,6 +16,18 @@ export type ObserverDeps = {
   getReadOnOpen: () => boolean;
   /** チャットを開いて表示が落ち着いたとき、最新の回答を頭から読ませる */
   onOpenChat: (content: Element) => void;
+  /**
+   * 長考の知らせ。返答中なのに文章が出てこない時間が続いたら「考え中です」と言わせる。
+   * 省略すると知らせない。
+   */
+  thinking?: {
+    /** 知らせ始めるまでの秒数。null なら知らせない（設定で切っている） */
+    getWaitSeconds: () => number | null;
+    /** 読んでいる途中の文も、これから読む文も無いか（読み上げにかぶせないため） */
+    isSpeechIdle: () => boolean;
+    /** count は、文章が止まってから何回目の知らせか（1 から） */
+    onNotice: (count: number) => void;
+  };
 };
 
 const TICK_MS = 200;
@@ -38,6 +50,11 @@ const OPEN_GIVE_UP_MS = 15000;
  * 仮想化で過去の質問が順番に描画されるため。本当の送信は送信操作の検出で拾える。
  */
 const OPEN_RENDER_GUARD_MS = 3000;
+/**
+ * 長考の知らせを繰り返す間隔。最初の待ち時間の何倍か。
+ * 何分もかかる作業で同じ台詞を言い続けないよう、だんだん間を空ける。
+ */
+const THINKING_REPEAT_FACTORS = [3, 6, 12];
 
 /**
  * DOM の変化を監視し、正規化した「新しく増えた本文」だけをチャンク化して流す。
@@ -92,6 +109,10 @@ export class ChatObserver {
   private openPending: { since: number; candidateId: string | null; candidateSince: number } | null = null;
   /** 最後にチャットを開いた時刻 */
   private openedAt = 0;
+  /** 返答中で、文章も読み上げも無い状態がいつから続いているか。その状態でなければ null */
+  private quietSince: number | null = null;
+  /** 今の静かな時間のあいだに、長考の知らせを何回言ったか */
+  private thinkingNotices = 0;
 
   constructor(private deps: ObserverDeps) {
     this.chunker = new SpeechChunker(deps.getChunkerOptions());
@@ -189,6 +210,7 @@ export class ChatObserver {
 
     const generating = adapter.isGenerating();
     if (generating) this.armed = true;
+    this.checkThinking(generating);
     const latest = adapter.getLatestAssistantMessage();
     this.checkOpenRead(latest, generating);
     if (!latest) return;
@@ -243,6 +265,7 @@ export class ChatObserver {
     if (delta) {
       this.chunker.append(delta);
       this.lastDeltaAt = Date.now();
+      this.resetThinking();
     }
 
     const settled = Date.now() - this.lastDeltaAt >= SETTLE_MS;
@@ -260,6 +283,39 @@ export class ChatObserver {
       this.finished = true;
       log('Observer', '回答を読み切った', latest.id);
     }
+  }
+
+  private resetThinking(): void {
+    this.quietSince = null;
+    this.thinkingNotices = 0;
+  }
+
+  /**
+   * 返答中なのに、文章も読み上げも無い時間が続いたら知らせる。
+   * 1 回目は設定の秒数で、そのあとは間を空けながら繰り返す。
+   */
+  private checkThinking(generating: boolean): void {
+    const t = this.deps.thinking;
+    if (!t) return;
+    const wait = t.getWaitSeconds();
+    if (wait === null || !generating || !this.deps.getEnabled()) return this.resetThinking();
+    const now = Date.now();
+    if (!t.isSpeechIdle()) {
+      // 読み上げている間は「静か」ではない。読み終わってから数え直す
+      this.quietSince = null;
+      return;
+    }
+    if (this.quietSince === null) {
+      this.quietSince = now;
+      return;
+    }
+    const n = this.thinkingNotices;
+    const factor = n === 0 ? 1 : THINKING_REPEAT_FACTORS[Math.min(n - 1, THINKING_REPEAT_FACTORS.length - 1)];
+    if (now - this.quietSince < wait * factor * 1000) return;
+    this.thinkingNotices = n + 1;
+    this.quietSince = null;
+    log('Observer', '長考の知らせ', this.thinkingNotices);
+    t.onNotice(this.thinkingNotices);
   }
 
   private beginOpen(): void {

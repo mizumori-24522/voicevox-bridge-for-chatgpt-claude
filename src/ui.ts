@@ -157,6 +157,13 @@ export class UiPanel {
               <input type="checkbox" id="readSymbols">記号を読む（_ - . /）</label>
             <label class="chk"><input type="checkbox" id="readOnOpen">チャットを開いたら最新の回答を読む</label>
             <label class="chk"><input type="checkbox" id="stopOnNew">新しい質問で読み上げ停止</label>
+            <label class="chk" title="「▶ ここから続けて読む」のとき、間の質問も質問用の声で読みます">
+              <input type="checkbox" id="contQuestions">続けて読むとき、質問も読む</label>
+            <label class="chk" title="返答中に文章がしばらく出てこないとき、声で知らせます">
+              <input type="checkbox" id="thinking">長考中は「考え中です」と知らせる</label>
+            <div class="row"><label title="文章が止まってから「考え中です」と言うまでの秒数">考え中</label>
+              <input type="number" id="thinkingSec" min="3" max="120" step="1" style="flex:none;width:52px">
+              <span style="font-size:11px">秒たったら知らせる</span></div>
             <label class="chk"><input type="checkbox" id="debug">デバッグログ</label>
             <div class="row">
               <button class="btn" id="test">テスト発声</button>
@@ -178,6 +185,7 @@ export class UiPanel {
       status: q('status'), codeMode: q('codeMode'), urlMode: q('urlMode'),
       tableMode: q('tableMode'), stopOnNew: q('stopOnNew'), debug: q('debug'),
       readSymbols: q('readSymbols'), readOnOpen: q('readOnOpen'),
+      contQuestions: q('contQuestions'), thinking: q('thinking'), thinkingSec: q('thinkingSec'),
       test: q('test'), reconnect: q('reconnect'), speakSel: q('speakSel'),
     };
 
@@ -263,6 +271,17 @@ export class UiPanel {
     this.el.stopOnNew.addEventListener('change', (e) => {
       this.cb.onChange({ stopOnNewQuestion: (e.target as HTMLInputElement).checked });
     });
+    this.el.contQuestions.addEventListener('change', (e) => {
+      this.cb.onChange({ continuousReadsQuestions: (e.target as HTMLInputElement).checked });
+    });
+    this.el.thinking.addEventListener('change', (e) => {
+      this.cb.onChange({ thinkingNotice: (e.target as HTMLInputElement).checked });
+    });
+    this.el.thinkingSec.addEventListener('change', (e) => {
+      const v = Math.round(Number((e.target as HTMLInputElement).value));
+      if (!Number.isFinite(v)) return;
+      this.cb.onChange({ thinkingNoticeSeconds: Math.min(120, Math.max(3, v)) });
+    });
     this.el.debug.addEventListener('change', (e) => {
       this.cb.onChange({ debug: (e.target as HTMLInputElement).checked });
     });
@@ -282,6 +301,10 @@ export class UiPanel {
     (this.el.readSymbols as HTMLInputElement).checked = s.readSymbols;
     (this.el.readOnOpen as HTMLInputElement).checked = s.readOnOpen;
     (this.el.stopOnNew as HTMLInputElement).checked = s.stopOnNewQuestion;
+    (this.el.contQuestions as HTMLInputElement).checked = s.continuousReadsQuestions;
+    (this.el.thinking as HTMLInputElement).checked = s.thinkingNotice;
+    (this.el.thinkingSec as HTMLInputElement).value = String(s.thinkingNoticeSeconds);
+    (this.el.thinkingSec as HTMLInputElement).disabled = !s.thinkingNotice;
     (this.el.debug as HTMLInputElement).checked = s.debug;
     this.el.toggle.textContent = s.enabled ? '🔊 ON' : '🔇 OFF';
     this.el.toggle.classList.toggle('on', s.enabled);
