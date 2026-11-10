@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VOICEVOX Bridge for ChatGPT & Claude
 // @namespace    local.voicevox-bridge-for-chatgpt-claude
-// @version      1.1.0
+// @version      1.2.0
 // @author       mizumori-24522
 // @description  ChatGPT Web と Claude Web（Claude Code の claude.ai/code も）の回答を VOICEVOX で逐次読み上げする
 // @homepageURL  https://github.com/mizumori-24522/voicevox-bridge-for-chatgpt-claude
@@ -41,6 +41,9 @@
     readSymbols: false,
     readOnOpen: true,
     stopOnNewQuestion: true,
+    continuousReadsQuestions: false,
+    thinkingNotice: true,
+    thinkingNoticeSeconds: 10,
     engineOrigin: "http://127.0.0.1:50021",
     debug: false,
     minimumChunkLength: 35,
@@ -797,6 +800,21 @@
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
   }
+  function rowsContiguous(a, b) {
+    const rowA = a.closest(ROW_SEL);
+    const rowB = b.closest(ROW_SEL);
+    if (!rowA || !rowB) return true;
+    const from = rowIndex(rowA);
+    const to = rowIndex(rowB);
+    if (from === null || to === null || to <= from) return true;
+    const present = /* @__PURE__ */ new Set();
+    for (const row of Array.from(document.querySelectorAll(ROW_SEL))) {
+      const i = rowIndex(row);
+      if (i !== null) present.add(i);
+    }
+    for (let i = from + 1; i < to; i++) if (!present.has(i)) return false;
+    return true;
+  }
   class ClaudeCodeAdapter {
     constructor() {
       this.resumesAfterPause = true;
@@ -910,6 +928,9 @@
         true
       );
     }
+    isContiguous(a, b) {
+      return rowsContiguous(a, b);
+    }
     probe() {
       const rows = document.querySelectorAll(ROW_SEL).length;
       const composer = this.getComposer() !== null;
@@ -1009,6 +1030,10 @@
     }
     probe() {
       return this.current.probe();
+    }
+    isContiguous(a, b) {
+      var _a, _b;
+      return ((_b = (_a = this.current).isContiguous) == null ? void 0 : _b.call(_a, a, b)) ?? true;
     }
   }
   const ASSISTANT_SEL = '[data-testid="assistant-message"]';
@@ -1138,6 +1163,10 @@
         },
         true
       );
+    }
+    /** チャットの行も Claude Code と同じ仕組み（transcript-row と通し番号）で並んでいる */
+    isContiguous(a, b) {
+      return rowsContiguous(a, b);
     }
     probe() {
       const turns = document.querySelectorAll(`${ASSISTANT_SEL}, ${USER_SEL}`).length;
@@ -1443,6 +1472,7 @@ ${el.textContent ?? ""}
   const OPEN_STABLE_MS = 1e3;
   const OPEN_GIVE_UP_MS = 15e3;
   const OPEN_RENDER_GUARD_MS = 3e3;
+  const THINKING_REPEAT_FACTORS = [3, 6, 12];
   class ChatObserver {
     constructor(deps) {
       this.deps = deps;
@@ -1460,6 +1490,8 @@ ${el.textContent ?? ""}
       this.conversationPath = location.pathname;
       this.openPending = null;
       this.openedAt = 0;
+      this.quietSince = null;
+      this.thinkingNotices = 0;
       this.chunker = new SpeechChunker(deps.getChunkerOptions());
     }
     /** 入力欄での送信操作を検出したときに呼ぶ */
@@ -1536,6 +1568,7 @@ ${el.textContent ?? ""}
       }
       const generating = adapter.isGenerating();
       if (generating) this.armed = true;
+      this.checkThinking(generating);
       const latest = adapter.getLatestAssistantMessage();
       this.checkOpenRead(latest, generating);
       if (!latest) return;
@@ -1575,6 +1608,7 @@ ${el.textContent ?? ""}
       if (delta) {
         this.chunker.append(delta);
         this.lastDeltaAt = Date.now();
+        this.resetThinking();
       }
       const settled = Date.now() - this.lastDeltaAt >= SETTLE_MS;
       const done = !generating && settled;
@@ -1588,6 +1622,36 @@ ${el.textContent ?? ""}
         this.finished = true;
         log("Observer", "回答を読み切った", latest.id);
       }
+    }
+    resetThinking() {
+      this.quietSince = null;
+      this.thinkingNotices = 0;
+    }
+    /**
+     * 返答中なのに、文章も読み上げも無い時間が続いたら知らせる。
+     * 1 回目は設定の秒数で、そのあとは間を空けながら繰り返す。
+     */
+    checkThinking(generating) {
+      const t = this.deps.thinking;
+      if (!t) return;
+      const wait = t.getWaitSeconds();
+      if (wait === null || !generating || !this.deps.getEnabled()) return this.resetThinking();
+      const now = Date.now();
+      if (!t.isSpeechIdle()) {
+        this.quietSince = null;
+        return;
+      }
+      if (this.quietSince === null) {
+        this.quietSince = now;
+        return;
+      }
+      const n = this.thinkingNotices;
+      const factor = n === 0 ? 1 : THINKING_REPEAT_FACTORS[Math.min(n - 1, THINKING_REPEAT_FACTORS.length - 1)];
+      if (now - this.quietSince < wait * factor * 1e3) return;
+      this.thinkingNotices = n + 1;
+      this.quietSince = null;
+      log("Observer", "長考の知らせ", this.thinkingNotices);
+      t.onNotice(this.thinkingNotices);
     }
     beginOpen() {
       const now = Date.now();
@@ -2123,6 +2187,13 @@ details summary { cursor: pointer; opacity: .8; font-size: 11px; }
               <input type="checkbox" id="readSymbols">記号を読む（_ - . /）</label>
             <label class="chk"><input type="checkbox" id="readOnOpen">チャットを開いたら最新の回答を読む</label>
             <label class="chk"><input type="checkbox" id="stopOnNew">新しい質問で読み上げ停止</label>
+            <label class="chk" title="「▶ ここから続けて読む」のとき、間の質問も質問用の声で読みます">
+              <input type="checkbox" id="contQuestions">続けて読むとき、質問も読む</label>
+            <label class="chk" title="返答中に文章がしばらく出てこないとき、声で知らせます">
+              <input type="checkbox" id="thinking">長考中は「考え中です」と知らせる</label>
+            <div class="row"><label title="文章が止まってから「考え中です」と言うまでの秒数">考え中</label>
+              <input type="number" id="thinkingSec" min="3" max="120" step="1" style="flex:none;width:52px">
+              <span style="font-size:11px">秒たったら知らせる</span></div>
             <label class="chk"><input type="checkbox" id="debug">デバッグログ</label>
             <div class="row">
               <button class="btn" id="test">テスト発声</button>
@@ -2156,6 +2227,9 @@ details summary { cursor: pointer; opacity: .8; font-size: 11px; }
         debug: q("debug"),
         readSymbols: q("readSymbols"),
         readOnOpen: q("readOnOpen"),
+        contQuestions: q("contQuestions"),
+        thinking: q("thinking"),
+        thinkingSec: q("thinkingSec"),
         test: q("test"),
         reconnect: q("reconnect"),
         speakSel: q("speakSel")
@@ -2231,6 +2305,17 @@ details summary { cursor: pointer; opacity: .8; font-size: 11px; }
       this.el.stopOnNew.addEventListener("change", (e) => {
         this.cb.onChange({ stopOnNewQuestion: e.target.checked });
       });
+      this.el.contQuestions.addEventListener("change", (e) => {
+        this.cb.onChange({ continuousReadsQuestions: e.target.checked });
+      });
+      this.el.thinking.addEventListener("change", (e) => {
+        this.cb.onChange({ thinkingNotice: e.target.checked });
+      });
+      this.el.thinkingSec.addEventListener("change", (e) => {
+        const v = Math.round(Number(e.target.value));
+        if (!Number.isFinite(v)) return;
+        this.cb.onChange({ thinkingNoticeSeconds: Math.min(120, Math.max(3, v)) });
+      });
       this.el.debug.addEventListener("change", (e) => {
         this.cb.onChange({ debug: e.target.checked });
       });
@@ -2249,6 +2334,10 @@ details summary { cursor: pointer; opacity: .8; font-size: 11px; }
       this.el.readSymbols.checked = s.readSymbols;
       this.el.readOnOpen.checked = s.readOnOpen;
       this.el.stopOnNew.checked = s.stopOnNewQuestion;
+      this.el.contQuestions.checked = s.continuousReadsQuestions;
+      this.el.thinking.checked = s.thinkingNotice;
+      this.el.thinkingSec.value = String(s.thinkingNoticeSeconds);
+      this.el.thinkingSec.disabled = !s.thinkingNotice;
       this.el.debug.checked = s.debug;
       this.el.toggle.textContent = s.enabled ? "🔊 ON" : "🔇 OFF";
       this.el.toggle.classList.toggle("on", s.enabled);
@@ -2295,8 +2384,13 @@ details summary { cursor: pointer; opacity: .8; font-size: 11px; }
   const STYLE_ID = "cvb-actions-style";
   const LABELS = {
     answer: "🔊 この回答を読む",
-    question: "🔊 この質問を読む"
+    question: "🔊 この質問を読む",
+    continue: "▶ ここから続けて読む"
   };
+  const TITLES = {
+    continue: "この回答から会話の最後まで、順番に読み上げます"
+  };
+  const CONTINUE_GAP = 6;
   const BASE_CSS = `
 [${BTN_ATTR}] {
   position: absolute; z-index: 50;
@@ -2311,7 +2405,21 @@ details summary { cursor: pointer; opacity: .8; font-size: 11px; }
 [${MARK_ATTR}]:hover > [${BTN_ATTR}],
 [${BTN_ATTR}]:focus-visible { opacity: 1; }
 [${BTN_ATTR}]:hover { background: rgba(34,197,94,.25); border-color: rgba(34,197,94,.7); }
+/* 回答のボタンの位置が測れないときの置き場所。測れたら alignContinue が上書きする */
+[${BTN_ATTR}="continue"] { top: -24px; left: 124px; }
 `;
+  function alignContinue(turn, btn) {
+    const answer = turn.querySelector(`:scope > [${BTN_ATTR}="answer"]`);
+    if (!answer) return;
+    const a = answer.getBoundingClientRect();
+    if (a.width === 0) return;
+    const t = turn.getBoundingClientRect();
+    btn.style.left = `${Math.round(a.right - t.left - turn.clientLeft + CONTINUE_GAP)}px`;
+    btn.style.top = `${Math.round(a.top - t.top - turn.clientTop)}px`;
+    btn.style.right = "auto";
+    btn.style.bottom = "auto";
+    btn.style.transform = "none";
+  }
   function ensureStyle(layout) {
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
@@ -2321,9 +2429,9 @@ details summary { cursor: pointer; opacity: .8; font-size: 11px; }
   }
   function syncReadButtons(turns, kind, onRead, layout) {
     ensureStyle(layout);
-    const align = kind === "question" ? layout.alignQuestion : void 0;
+    const align = kind === "question" ? layout.alignQuestion : kind === "continue" ? alignContinue : void 0;
     for (const turn of turns) {
-      const existing = turn.querySelector(`:scope > [${BTN_ATTR}]`);
+      const existing = turn.querySelector(`:scope > [${BTN_ATTR}="${kind}"]`);
       if (existing) {
         align == null ? void 0 : align(turn, existing);
         continue;
@@ -2334,6 +2442,7 @@ details summary { cursor: pointer; opacity: .8; font-size: 11px; }
       btn.setAttribute(BTN_ATTR, kind);
       btn.type = "button";
       btn.textContent = LABELS[kind];
+      if (TITLES[kind]) btn.title = TITLES[kind];
       btn.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -2351,6 +2460,98 @@ details summary { cursor: pointer; opacity: .8; font-size: 11px; }
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
     return sel.getRangeAt(0).cloneContents();
+  }
+  const MAX_GAP_RETRIES = 12;
+  const KEY_LENGTH = 200;
+  class ContinuousReader {
+    constructor(deps) {
+      this.deps = deps;
+      this.current = null;
+      this.token = 0;
+      this.advancing = false;
+      this.gapRetries = 0;
+    }
+    get active() {
+      return this.current !== null;
+    }
+    /** この発言から読み始める */
+    start(turn) {
+      this.token++;
+      this.advancing = false;
+      this.play(turn);
+    }
+    /** 止める（STOP・新しい質問・ほかの読み上げを始めたとき） */
+    cancel() {
+      this.token++;
+      this.advancing = false;
+      this.current = null;
+    }
+    /** 読み上げの列が空になったら呼ぶ。次の発言へ進む */
+    onIdle() {
+      if (!this.current || this.advancing) return;
+      this.advancing = true;
+      const el = this.current.turn.el;
+      if (el.isConnected) this.deps.reveal(el, "end");
+      this.advanceSoon();
+    }
+    advanceSoon() {
+      const token = this.token;
+      setTimeout(() => {
+        var _a, _b, _c, _d;
+        if (token !== this.token) return;
+        if (!this.deps.isIdle()) {
+          this.advancing = false;
+          return;
+        }
+        const cur = this.current;
+        const next = this.findNext();
+        if (next === "lost") return this.finish("lost");
+        if (next === null) return this.finish("done");
+        if (cur && cur.turn.el.isConnected && ((_b = (_a = this.deps).isContiguous) == null ? void 0 : _b.call(_a, cur.turn.el, next.el)) === false) {
+          if (++this.gapRetries > MAX_GAP_RETRIES) return this.finish("lost");
+          (_d = (_c = this.deps).nudge) == null ? void 0 : _d.call(_c, cur.turn.el);
+          return this.advanceSoon();
+        }
+        this.advancing = false;
+        this.play(next);
+      }, this.deps.settleMs ?? 400);
+    }
+    finish(reason) {
+      this.advancing = false;
+      this.current = null;
+      this.deps.onFinish(reason);
+    }
+    play(turn) {
+      this.gapRetries = 0;
+      this.current = { turn, key: this.deps.textOf(turn).slice(0, KEY_LENGTH) };
+      this.deps.reveal(turn.el, "start");
+      if (!this.deps.speak(turn)) {
+        const token = this.token;
+        setTimeout(() => {
+          if (token === this.token) this.onIdle();
+        }, 0);
+      }
+    }
+    findNext() {
+      const cur = this.current;
+      if (!cur) return null;
+      const turns = this.deps.listTurns();
+      let i = turns.findIndex((t) => t.el === cur.turn.el);
+      if (i < 0 && cur.key) {
+        i = turns.findIndex((t) => t.kind === cur.turn.kind && this.deps.textOf(t).slice(0, KEY_LENGTH) === cur.key);
+      }
+      if (i < 0) return "lost";
+      return turns[i + 1] ?? null;
+    }
+  }
+  function mergeTurns(answers, questions) {
+    const all = [
+      ...answers.map((el) => ({ el, kind: "answer" })),
+      ...questions.map((el) => ({ el, kind: "question" }))
+    ];
+    return all.sort(
+      (a, b) => a.el === b.el ? 0 : a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+    );
   }
   class IconCache {
     constructor(client) {
@@ -2414,6 +2615,7 @@ details summary { cursor: pointer; opacity: .8; font-size: 11px; }
         pauseLengthScale: settings.pauseLengthScale
       }),
       onError: (msg) => {
+        continuous.cancel();
         ui.setStatus(msg, true);
         if (msg.includes("接続")) void connect();
       },
@@ -2422,6 +2624,7 @@ details summary { cursor: pointer; opacity: .8; font-size: 11px; }
         if (s.paused) ui.setStatus(`一時停止中（待ち ${s.queued}）`);
         else if (!s.speaking && s.queued === 0) ui.setStatus("");
         else ui.setStatus(`${s.speaking ? "読み上げ中" : "合成中"}（待ち ${s.queued}）`);
+        if (s.idle) continuous.onIdle();
       }
     });
     const ui = new UiPanel(settings, {
@@ -2455,15 +2658,39 @@ details summary { cursor: pointer; opacity: .8; font-size: 11px; }
     });
     function speakElement(el, styleId) {
       stopSpeaking();
+      if (!enqueueElement(el, styleId)) ui.setStatus("読み上げる内容がありません", true);
+    }
+    function enqueueElement(el, styleId) {
       const text = extractSpeechText(el, sanitizeOptions());
-      if (!text) {
-        ui.setStatus("読み上げる内容がありません", true);
-        return;
-      }
+      if (!text) return false;
       const chunker = new SpeechChunker(chunkerOptions());
       chunker.append(text);
-      for (const c of chunker.take(true)) queue.enqueue(c, styleId);
+      const chunks = chunker.take(true);
+      for (const c of chunks) queue.enqueue(c, styleId);
+      return chunks.length > 0;
     }
+    const contentOf = (t) => t.kind === "answer" ? adapter.contentOfTurn(t.el) : adapter.contentOfUserTurn(t.el);
+    const continuous = new ContinuousReader({
+      listTurns: () => mergeTurns(adapter.assistantTurns(), settings.continuousReadsQuestions ? adapter.userTurns() : []),
+      textOf: (t) => extractSpeechText(contentOf(t), sanitizeOptions()),
+      speak: (t) => enqueueElement(contentOf(t), t.kind === "question" ? questionStyleId() : void 0),
+      isIdle: () => queue.snapshot.idle,
+      reveal: (el, block) => el.scrollIntoView({ behavior: "smooth", block }),
+      isContiguous: (a, b) => {
+        var _a;
+        return ((_a = adapter.isContiguous) == null ? void 0 : _a.call(adapter, a, b)) ?? true;
+      },
+      nudge: (el) => {
+        let p = el.parentElement;
+        while (p && !(p.scrollHeight > p.clientHeight + 10 && /auto|scroll/.test(getComputedStyle(p).overflowY))) {
+          p = p.parentElement;
+        }
+        p == null ? void 0 : p.scrollBy({ top: p.clientHeight * 0.6 });
+      },
+      onFinish: (reason) => {
+        if (reason === "lost") ui.setStatus("続きの発言を見つけられませんでした", true);
+      }
+    });
     function questionStyleId() {
       const id = settings.questionStyleId;
       return id !== null && styleOptions.some((o) => o.styleId === id) ? id : void 0;
@@ -2491,9 +2718,16 @@ details summary { cursor: pointer; opacity: .8; font-size: 11px; }
       onOpenChat: (content) => speakElement(content),
       onNewUserMessage: () => {
         if (settings.stopOnNewQuestion) stopSpeaking();
+      },
+      thinking: {
+        getWaitSeconds: () => settings.thinkingNotice ? settings.thinkingNoticeSeconds : null,
+        // 続けて読んでいる最中は、発言と発言の間の一瞬の空きに割り込まない
+        isSpeechIdle: () => queue.snapshot.idle && !continuous.active,
+        onNotice: (count) => queue.enqueue(count === 1 ? "考え中です。" : "まだ考えています。")
       }
     });
     function stopSpeaking() {
+      continuous.cancel();
       queue.stopAll();
       observer.resetBuffers();
       ui.setStatus("");
@@ -2548,6 +2782,15 @@ details summary { cursor: pointer; opacity: .8; font-size: 11px; }
           adapter.assistantTurns(),
           "answer",
           (turn) => speakElement(adapter.contentOfTurn(turn)),
+          site.readButtons
+        );
+        syncReadButtons(
+          adapter.assistantTurns(),
+          "continue",
+          (turn) => {
+            stopSpeaking();
+            continuous.start({ el: turn, kind: "answer" });
+          },
           site.readButtons
         );
         syncReadButtons(
